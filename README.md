@@ -118,8 +118,8 @@ the ACE reports no RFID data (gate 3, shown as "UNKNOWN"). Third-party spools we
 - [x] Patched file compiles; on the stock `20260716_02` file the result has md5 `ae3732e31c997db46524deccfd032883`
 - [x] Full printer reboot (RFID detection still fine)
 - [x] Applies and compiles on `20260901_01`, `master` and `develop` (source check only, not run on a printer)
-- [x] Real 2-color print: the active spool follows the print start (gate 1 -> spool 24) and the color change (gate 2 -> spool 16) (tested on v1.0.0)
-- [ ] The same print re-run on v1.1.0 (the activation code was reorganised since)
+- [x] Real 2-color print: the active spool follows the print start (gate 1 -> spool 24) and the color change (gate 2 -> spool 16) (tested on an earlier build)
+- [ ] The same print re-run on the current build (the activation code was reorganised since)
 - [x] Assignments restored after a Moonraker restart and after a cold boot, without typing `MMU_SET_SPOOL` again (checked in the Moonraker log)
 - [x] A gate without a loaded filament stays `ready` in the ACE Hub status, so the "empty for 5 minutes" rule does not fire on an unloaded gate
 - [ ] Longer prints with several swaps back and forth (e.g. A -> B -> A)
@@ -147,9 +147,8 @@ the ACE reports no RFID data (gate 3, shown as "UNKNOWN"). Third-party spools we
 
 ## Changelog
 
-- **v1.1.0** - Assignments are remembered across Moonraker restarts and reboots (patch 9). `MMU_SET_SPOOL` answers with a usage message when `GATE` or `SPOOLID` is missing or not a number (before, the console showed a raw `ValueError`). Assignments are keyed by the global gate index, so they work with several ACE units. The `MMU_LOAD` hook shares one activation helper with the loaded-gate hook. If the script says you have an earlier build, run `--undo` and apply it again.
-- **v1.0.0** - First public release.
-  A build published briefly on 2026-09-21 had a bug in the `MMU_LOAD` hook: it could send an RFID-derived pseudo-ID to Spoolman on a gate without a manual assignment. It was replaced by the current v1.0.0 build.
+- **v1.0.0** - First public release. Ties each ACE gate to a Spoolman spool, follows the gate the ACE Hub reports as loaded (print start, color changes, `MMU_LOAD`), and remembers the assignments across Moonraker restarts and reboots.
+  Earlier builds published on 2026-09-21 did not remember assignments, and one of them had a bug in the `MMU_LOAD` hook (it could send an RFID-derived pseudo-ID to Spoolman on a gate without a manual assignment). If the script says you have an earlier build, run `--undo` and apply it again.
 
 ## Contributing
 
