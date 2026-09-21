@@ -1,0 +1,16 @@
+# Never commit printer backups or secrets (they contain the printer's private keys)
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+backup*/
+kobra-personnal-backup*
+debug-bundle*
+device.ini
+device_account.json
+cert1/
+cert3/
+devicePk
+# Working copies
+*.orig
+*.before-patch
