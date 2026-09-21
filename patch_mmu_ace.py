@@ -7,7 +7,7 @@
 # |           *   Patched by Edwin Lepere <Mazerakam>   *            |
 # |                                                                  |
 # |        --------------------------------------------------        |
-# |     Rinkhals mmu_ace.py  -  Spoolman + ACE Pro  -  8 patches     |
+# |     Rinkhals mmu_ace.py  -  Spoolman + ACE Pro  -  9 patches     |
 # |                        Anycubic Kobra S1                         |
 # |                                                                  |
 # |        Unofficial community patch - use at your own risk         |
@@ -41,7 +41,7 @@ BANNER = """
 |           *   Patched by Edwin Lepere <Mazerakam>   *            |
 |                                                                  |
 |        --------------------------------------------------        |
-|     Rinkhals mmu_ace.py  -  Spoolman + ACE Pro  -  8 patches     |
+|     Rinkhals mmu_ace.py  -  Spoolman + ACE Pro  -  9 patches     |
 |                        Anycubic Kobra S1                         |
 |                                                                  |
 |        Unofficial community patch - use at your own risk         |
@@ -156,9 +156,9 @@ with open(target, "r", encoding="utf-8") as f:
 
 # Already patched? Say so clearly instead of failing on the first check.
 if "_activate_spoolman_for_gate" in content:
-    if "status.gate_spool_id[gate]" in content:
-        sys.exit("Patched with an earlier build of this patch (known issue: the MMU_LOAD hook could send "
-                 "an RFID-derived pseudo-ID to Spoolman). Run with --undo first, then run the patch again.")
+    if "_spool_store" not in content:
+        sys.exit("Patched with an earlier build of this patch. "
+                 "Run with --undo first, then run the patch again.")
     print("Already patched - nothing to change.")
     if args.restart:
         restart_moonraker(folder)
@@ -185,6 +185,9 @@ new1 = '''        self._pending_update = False  # Flag to track if update is nee
         # permanently overwritten by the RFID-serial-derived pseudo-ID on
         # every hardware status poll — this override survives that resync.
         self._manual_spool_overrides: dict[int, int] = {}
+        # The assignments are also written to <data_path>/config/mmu_ace_spools.json so they
+        # survive a Moonraker restart or a reboot (see MmuAceSpoolStore).
+        self._spool_store = MmuAceSpoolStore(self._spool_store_path())
 
         # LRU Cache for filament temperature info (key: "unit_id-gate_index-sku")
         # Limit to 16 entries (2x max gates) to prevent memory leak
@@ -200,8 +203,8 @@ old2 = '''                    # Use serial number as spool_id if available
                     except:
                         gate.spool_id = abs(hash(sku)) % (2**31)'''
 
-new2 = '''                    if index in self._manual_spool_overrides:
-                        gate.spool_id = self._manual_spool_overrides[index]
+new2 = '''                    if global_gate_index in self._manual_spool_overrides:
+                        gate.spool_id = self._manual_spool_overrides[global_gate_index]
                     else:
                         # Use serial number as spool_id if available
                         try:
@@ -233,6 +236,7 @@ new3 = '''        unit, gate = gate_lookup
 
         if spool_id is not None and spool_id > 0:
             self._manual_spool_overrides[gate_index] = spool_id
+            self._spool_store.remember(gate_index, spool_id, gate.sku)
             logging.info(f"Remembered manual spool_id {spool_id} for gate {gate_index}")
 
         if gate.rfid == 2:
@@ -257,6 +261,7 @@ new4 = '''    def set_manual_spool_id(self, gate_index: int, spool_id: int) -> b
 
         _, gate = gate_lookup
         self._manual_spool_overrides[gate_index] = spool_id
+        self._spool_store.remember(gate_index, spool_id, gate.sku)
         gate.spool_id = spool_id
 
         self._handle_status_update(force=True)
@@ -279,7 +284,8 @@ new5a = '''        self.register_gcode_handler("MMU_GATE_MAP", self._on_gcode_mm
 assert content.count(old5a) == 1, f"Match 5a: {content.count(old5a)}"
 content = content.replace(old5a, new5a)
 
-old5b = '''    async def _on_gcode_mmu_gate_map(self, args: dict[str, str | None], delegate):'''
+old5b = '''    # Triggered on spool edit in ui
+    async def _on_gcode_mmu_gate_map(self, args: dict[str, str | None], delegate):'''
 
 new5b = '''    async def _on_gcode_mmu_set_spool(self, args: dict[str, str | None], delegate):
         """Manually assign a Spoolman ID to a gate: MMU_SET_SPOOL GATE=<n> SPOOLID=<id>
@@ -290,11 +296,11 @@ new5b = '''    async def _on_gcode_mmu_set_spool(self, args: dict[str, str | Non
         unquoted space). Also works on RFID-tagged gates, where
         update_gate() otherwise rejects all writes.
         """
-        gate_index = self._get_gcode_arg_int("GATE", args)
-        spool_id = self._get_gcode_arg_int("SPOOLID", args)
-
-        if gate_index is None or spool_id is None:
-            message = "MMU_SET_SPOOL: requires GATE=<n> SPOOLID=<id>"
+        try:
+            gate_index = self._get_gcode_arg_int("GATE", args)
+            spool_id = self._get_gcode_arg_int("SPOOLID", args)
+        except ValueError:
+            message = "MMU_SET_SPOOL: requires GATE=<n> SPOOLID=<id> (integers, no space after '=')"
             logging.error(message)
             await self._send_gcode_response(message)
             return None
@@ -315,6 +321,7 @@ new5b = '''    async def _on_gcode_mmu_set_spool(self, args: dict[str, str | Non
         await self._send_gcode_response(message)
         return None
 
+    # Triggered on spool edit in ui
     async def _on_gcode_mmu_gate_map(self, args: dict[str, str | None], delegate):'''
 
 assert content.count(old5b) == 1, f"Match 5b: {content.count(old5b)}"
@@ -328,22 +335,9 @@ old6 = '''            message = f"MMU_LOAD: Loading {length}mm from gate {gate} 
             message = f"MMU_LOAD failed: {e}"
             logging.error(message)'''
 
-new6 = '''            # Switch Moonraker's [spoolman] component's active spool to match
-            # the gate that was just loaded, so per-gate Spoolman usage
-            # tracking follows every in-print color change. Best-effort.
-            try:
-                spoolman = self.ace_controller.server.lookup_component("spoolman", None)
-                if spoolman is not None:
-                    # Only IDs assigned by the user (MMU_SET_SPOOL): gate.spool_id can be an
-                    # RFID-derived pseudo-ID that does not exist in Spoolman.
-                    spool_id = self.ace_controller._manual_spool_overrides.get(gate)
-                    if spool_id and spool_id > 0:
-                        result = spoolman.set_active_spool(spool_id)
-                        if inspect.isawaitable(result):
-                            await result
-                        logging.info(f"MMU_LOAD: Set active spool to {spool_id} for gate {gate}")
-            except Exception as e:
-                logging.error(f"MMU_LOAD: Error setting active spool: {e}")
+new6 = '''            # Point Moonraker's [spoolman] active spool at the gate that was just
+            # loaded (best-effort, user-assigned IDs only).
+            await self.ace_controller._activate_spoolman_for_gate(gate)
 
             message = f"MMU_LOAD: Loading {length}mm from gate {gate} (index {local_index}) at {speed}mm/s completed, MMU status updated"
             logging.info(message)
@@ -366,7 +360,7 @@ old7 = '''                else:
 
 new7 = '''                else:
                     # No RFID tag: keep the manually assigned Spoolman ID (if any)
-                    gate.spool_id = self._manual_spool_overrides.get(index, 0)
+                    gate.spool_id = self._manual_spool_overrides.get(global_gate_index, 0)
 
                 unit.gates.append(gate)'''
 
@@ -403,10 +397,142 @@ new8 = '''        self.ace.filament.pos = FILAMENT_POS_LOADED
         except Exception as e:
             logging.error(f"Error setting active Spoolman spool for gate {gate_index}: {e}")
 
+    def _spool_store_path(self):
+        """<data_path>/config/mmu_ace_spools.json, or None (persistence off) if unknown."""
+        try:
+            data_path = self.server.get_app_args().get("data_path")
+            if data_path and os.path.isdir(os.path.join(str(data_path), "config")):
+                return os.path.join(str(data_path), "config", "mmu_ace_spools.json")
+        except Exception as e:
+            logging.warning(f"[mmu_ace] Spool persistence disabled: {e}")
+        return None
+
+    def _sync_spool_store(self, gate_index: int, gate_status: int, sku: str):
+        """Called for every gate on every status rebuild. Restores an assignment
+        remembered before a restart (same RFID SKU in the gate) and forgets it when
+        the spool is gone (gate empty for a while, or a different product inserted).
+        Never raises: the ACE status rebuild must not depend on it."""
+        try:
+            store = self._spool_store
+            present = gate_status != GATE_EMPTY
+            if store.empty_too_long(gate_index, present, time.monotonic()):
+                if gate_index in self._manual_spool_overrides or gate_index in store.entries:
+                    logging.info(f"Gate {gate_index} empty for a while: forgetting its Spoolman ID")
+                self._manual_spool_overrides.pop(gate_index, None)
+                store.forget(gate_index)
+                return
+            if not present:
+                return
+            saved = store.entries.get(gate_index)
+            if gate_index not in self._manual_spool_overrides:
+                spool_id = store.restorable(gate_index, sku)
+                if spool_id:
+                    self._manual_spool_overrides[gate_index] = spool_id
+                    logging.info(f"Gate {gate_index}: restored Spoolman ID {spool_id} (same spool as before)")
+                    if gate_index == self.ace.loaded_gate:
+                        self.eventloop.create_task(self._activate_spoolman_for_gate(gate_index))
+            elif saved and saved["sku"] and sku and saved["sku"] != sku:
+                logging.info(f"Gate {gate_index}: spool changed ({saved['sku']} -> {sku}), forgetting its Spoolman ID")
+                self._manual_spool_overrides.pop(gate_index, None)
+                store.forget(gate_index)
+        except Exception as e:
+            logging.warning(f"[mmu_ace] Spool persistence error on gate {gate_index}: {e}")
+
     def _set_ace_status(self, filament_hub):'''
 
 assert content.count(old8) == 1, f"Match 8: {content.count(old8)}"
 content = content.replace(old8, new8)
+
+# PATCH 9: remember the assignments across restarts (small JSON file, see README)
+old9a = '''class MmuAceController:
+    ace: MmuAce
+'''
+
+new9a = '''class MmuAceSpoolStore:
+    """Remembers, across restarts, which Spoolman spool the user assigned to each ACE gate.
+    File: {"<gate>": {"spool_id": n, "sku": "<RFID SKU seen in the gate>"}}.
+    Never raises: a missing, corrupt or unwritable file only turns persistence off."""
+
+    FORGET_AFTER_EMPTY_S = 300  # a gate empty for this long means the spool was removed
+
+    def __init__(self, path):
+        self.path = path
+        self.entries = {}       # gate index -> {"spool_id": int, "sku": str}
+        self._empty_since = {}  # gate index -> time.monotonic() of the first empty poll
+        logging.info(f"[mmu_ace] Spoolman assignments file: {path or 'none (persistence off)'}")
+        self._load()
+
+    def _load(self):
+        if not self.path or not os.path.isfile(self.path):
+            return
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for key, value in data.items():
+                spool_id = int(value["spool_id"])
+                if spool_id > 0:
+                    self.entries[int(key)] = {"spool_id": spool_id, "sku": str(value.get("sku", ""))}
+            logging.info(f"[mmu_ace] Loaded {len(self.entries)} remembered Spoolman assignment(s) from {self.path}")
+        except Exception as e:
+            self.entries = {}
+            logging.warning(f"[mmu_ace] Could not read {self.path}: {e}")
+
+    def _save(self):
+        if not self.path:
+            return
+        try:
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({str(k): v for k, v in sorted(self.entries.items())}, f, indent=2)
+            os.replace(tmp, self.path)
+        except Exception as e:
+            logging.warning(f"[mmu_ace] Could not save {self.path}: {e}")
+
+    def remember(self, gate_index, spool_id, sku):
+        entry = {"spool_id": int(spool_id), "sku": sku or ""}
+        if self.entries.get(gate_index) != entry:
+            self.entries[gate_index] = entry
+            self._save()
+
+    def forget(self, gate_index):
+        self._empty_since.pop(gate_index, None)
+        if self.entries.pop(gate_index, None) is not None:
+            self._save()
+
+    def restorable(self, gate_index, sku):
+        """Remembered ID for this gate if it still holds the same product (same RFID SKU)."""
+        entry = self.entries.get(gate_index)
+        if entry and entry["sku"] == (sku or ""):
+            return entry["spool_id"]
+        return None
+
+    def empty_too_long(self, gate_index, present, now):
+        """True once the gate has been reported empty for FORGET_AFTER_EMPTY_S seconds."""
+        if present:
+            self._empty_since.pop(gate_index, None)
+            return False
+        return now - self._empty_since.setdefault(gate_index, now) >= self.FORGET_AFTER_EMPTY_S
+
+class MmuAceController:
+    ace: MmuAce
+'''
+
+assert content.count(old9a) == 1, f"Match 9a: {content.count(old9a)}"
+content = content.replace(old9a, new9a)
+
+old9b = '''                # Parse SKU for additional information
+                gate.sku = sku
+'''
+
+new9b = '''                # Restore / forget the remembered Spoolman ID of this gate
+                self._sync_spool_store(global_gate_index, gate.status, sku)
+
+                # Parse SKU for additional information
+                gate.sku = sku
+'''
+
+assert content.count(old9b) == 1, f"Match 9b: {content.count(old9b)}"
+content = content.replace(old9b, new9b)
 
 # Backup the untouched file (only now that every check has passed)
 if not os.path.exists(backup):
@@ -416,7 +542,7 @@ if not os.path.exists(backup):
 with open(target, "w", encoding="utf-8") as f:
     f.write(content)
 
-print("All 8 patches applied successfully.")
+print("All 9 patches applied successfully.")
 if args.restart:
     restart_moonraker(folder)
 else:

@@ -26,7 +26,7 @@ python3 /tmp/patch_mmu_ace.py --restart
 ```
 
 It finds the active Rinkhals version by itself, makes a backup (`mmu_ace.py.orig`), applies the patch and restarts
-Moonraker. You should read `All 8 patches applied successfully`.
+Moonraker. You should read `All 9 patches applied successfully`.
 
 **3. Assign your spools** in the Mainsail console, with **no space after `=`**:
 
@@ -38,10 +38,11 @@ MMU_SET_SPOOL GATE=3 SPOOLID=<spool-id>
 ```
 
 Replace `<spool-id>` with the spool's ID in Spoolman (a number, no spaces).
-Each command answers `Gate N assigned Spoolman ID X`. After a `MMU_LOAD`, the active spool is shown at
+Each command answers `Gate N assigned Spoolman ID X`. You do this **once**: the assignments are remembered
+(see [Persistence](#persistence)). After a `MMU_LOAD`, the active spool is shown at
 `http://<printer-ip>/server/spoolman/status` (`spool_id`).
 
-> `MMU_LOAD` really feeds filament. Unload first (`MMU_UNLOAD` or the printer screen) before loading another gate.
+> `MMU_LOAD` really feeds filament. If another gate is already loaded, it is unloaded first (the nozzle is heated for that).
 
 ## Undo
 
@@ -68,7 +69,7 @@ With the stock `mmu_ace.py`, an ACE gate cannot be tied to a Spoolman spool:
 - Moonraker's Spoolman active spool never follows the gate being loaded.
 - Print start and firmware-driven tool changes never call `MMU_LOAD`, so nothing tells Spoolman which spool is in use.
 
-## What it changes (8 small patches)
+## What it changes (9 small patches)
 
 | # |                                           Change                                        |
 |---|-----------------------------------------------------------------------------------------|
@@ -80,8 +81,23 @@ With the stock `mmu_ace.py`, an ACE gate cannot be tied to a Spoolman spool:
 | 6 | Every `MMU_LOAD` activates the assigned spool in Moonraker's Spoolman component         |
 | 7 | The manual ID is kept on gates **without** RFID (the `else` branch above)               |
 | 8 | Follows the gate the ACE Hub reports as loaded (print start, in-print color changes) and activates its Spoolman spool |
+| 9 | Remembers the assignments in a small file, restores them after a restart, forgets them when the spool is removed or replaced |
 
-Only `mmu_ace.py` is modified. `gklib` and the printer firmware config are not touched.
+Only `mmu_ace.py` is modified (plus one small data file, see below). `gklib` and the printer firmware config are not touched.
+
+## Persistence
+
+The assignments are saved in `mmu_ace_spools.json`, in Moonraker's `config` folder (the exact path is written to the
+Moonraker log: `grep "assignments file" moonraker.log`; on the tested Kobra S1 it is
+`/userdata/app/gk/printer_data/config/mmu_ace_spools.json`). After a Moonraker restart or a reboot:
+
+- an assignment is **restored** once its gate holds the same product again (same RFID SKU; gates without RFID data match
+  each other), so you do not have to type `MMU_SET_SPOOL` again;
+- it is **forgotten** when a different RFID product is inserted, or when the gate has been empty for 5 minutes;
+- typing `MMU_SET_SPOOL` again replaces it. To forget everything, delete the file and restart Moonraker.
+
+**Limit:** two spools of the same product are indistinguishable for the ACE. If you swap one for another while the
+printer is off, the old ID stays: run `MMU_SET_SPOOL` for that gate after a swap of identical spools.
 
 ## Safety
 
@@ -99,21 +115,24 @@ the ACE reports no RFID data (gate 3, shown as "UNKNOWN"). Third-party spools we
 
 - [x] Manual `MMU_LOAD` switches the Spoolman active spool (official Anycubic spools with RFID)
 - [x] Same on a gate **without** RFID data (patch 7)
-- [x] Patched file compiles; on the stock `20260716_02` file the result has md5 `c0524685cd2319c79455e5d4da2702d4`
+- [x] Patched file compiles; on the stock `20260716_02` file the result has md5 `ae3732e31c997db46524deccfd032883`
 - [x] Full printer reboot (RFID detection still fine)
 - [x] Applies and compiles on `20260901_01`, `master` and `develop` (source check only, not run on a printer)
-- [x] Real 2-color print: the active spool follows the print start (gate 1 -> spool 24) and the color change (gate 2 -> spool 16)
+- [x] Real 2-color print: the active spool follows the print start (gate 1 -> spool 24) and the color change (gate 2 -> spool 16) (tested on v1.0.0)
+- [ ] The same print re-run on v1.1.0 (the activation code was reorganised since)
+- [x] Assignments restored after a Moonraker restart and after a cold boot, without typing `MMU_SET_SPOOL` again (checked in the Moonraker log)
+- [x] A gate without a loaded filament stays `ready` in the ACE Hub status, so the "empty for 5 minutes" rule does not fire on an unloaded gate
 - [ ] Longer prints with several swaps back and forth (e.g. A -> B -> A)
 - [ ] Third-party (non-Anycubic) spools
 - [ ] Multiple ACE units
 
 ## Known limitations
 
-- Assignments live in memory: re-run `MMU_SET_SPOOL` after each Moonraker restart.
+- Assignments are restored after a restart only for the same product in the same gate (see Persistence).
 - Name, material and temperature are not pulled from Spoolman.
 - Only IDs assigned with `MMU_SET_SPOOL` are sent to Spoolman (never the RFID-derived pseudo-IDs).
 - The Happy Hare `spoolman_support` flag stays `off`, so Mainsail's "Choose Spool" button is disabled. Use `MMU_SET_SPOOL`.
-- Related upstream work: the maintainers track this as one workstream ([#89](https://github.com/rinkhals-community/Rinkhals/issues/89), [#107](https://github.com/rinkhals-community/Rinkhals/issues/107), [#141](https://github.com/rinkhals-community/Rinkhals/issues/141), PR [#142](https://github.com/rinkhals-community/Rinkhals/pull/142)). Their design goals include persisting assignments across restarts, which this patch does not do.
+- Related upstream work: the maintainers track this as one workstream ([#89](https://github.com/rinkhals-community/Rinkhals/issues/89), [#107](https://github.com/rinkhals-community/Rinkhals/issues/107), [#141](https://github.com/rinkhals-community/Rinkhals/issues/141)). Their design goals include persisting assignments across restarts, which this patch does not do.
 
 ## Troubleshooting
 
@@ -124,12 +143,13 @@ the ACE reports no RFID data (gate 3, shown as "UNKNOWN"). Third-party spools we
 | `Patched with an older version ...`             | Older version of this patch: run with `--undo`, then again. |
 | `mmu_ace.py not found`                          | Run it on the printer (SSH), or use `--path`.               |
 | Two `moonraker.py` processes running            | Happens after `app.sh stop` then `app.sh start` (the auto-restart wrapper respawns Moonraker). Use `--restart`, or stop the `moonraker.sh` wrappers first. |
-| `MMU_SET_SPOOL: requires GATE=<n> SPOOLID=<id>` | Remove any space after `=`.                                 |
+| `MMU_SET_SPOOL: requires GATE=<n> SPOOLID=<id> ...` | A value is missing or not a number. Remove any space after `=`.                                 |
 
 ## Changelog
 
+- **v1.1.0** - Assignments are remembered across Moonraker restarts and reboots (patch 9). `MMU_SET_SPOOL` answers with a usage message when `GATE` or `SPOOLID` is missing or not a number (before, the console showed a raw `ValueError`). Assignments are keyed by the global gate index, so they work with several ACE units. The `MMU_LOAD` hook shares one activation helper with the loaded-gate hook. If the script says you have an earlier build, run `--undo` and apply it again.
 - **v1.0.0** - First public release.
-  A build published briefly on 2026-09-21 had a bug in the `MMU_LOAD` hook: it could send an RFID-derived pseudo-ID to Spoolman on a gate without a manual assignment. It was replaced by the current build. If the script says you have an earlier build, run `--undo` and apply it again.
+  A build published briefly on 2026-09-21 had a bug in the `MMU_LOAD` hook: it could send an RFID-derived pseudo-ID to Spoolman on a gate without a manual assignment. It was replaced by the current v1.0.0 build.
 
 ## Contributing
 
