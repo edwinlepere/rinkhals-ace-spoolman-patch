@@ -156,6 +156,9 @@ with open(target, "r", encoding="utf-8") as f:
 
 # Already patched? Say so clearly instead of failing on the first check.
 if "_activate_spoolman_for_gate" in content:
+    if "status.gate_spool_id[gate]" in content:
+        sys.exit("Patched with v1.0.0 (known issue: the MMU_LOAD hook could send an RFID-derived "
+                 "pseudo-ID to Spoolman). Run with --undo first, then run the patch again.")
     print("Already patched - nothing to change.")
     if args.restart:
         restart_moonraker(folder)
@@ -331,8 +334,9 @@ new6 = '''            # Switch Moonraker's [spoolman] component's active spool t
             try:
                 spoolman = self.ace_controller.server.lookup_component("spoolman", None)
                 if spoolman is not None:
-                    status = self.ace_controller.get_status().mmu
-                    spool_id = status.gate_spool_id[gate] if gate < len(status.gate_spool_id) else -1
+                    # Only IDs assigned by the user (MMU_SET_SPOOL): gate.spool_id can be an
+                    # RFID-derived pseudo-ID that does not exist in Spoolman.
+                    spool_id = self.ace_controller._manual_spool_overrides.get(gate)
                     if spool_id and spool_id > 0:
                         result = spoolman.set_active_spool(spool_id)
                         if inspect.isawaitable(result):

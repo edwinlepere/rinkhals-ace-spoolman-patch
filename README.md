@@ -99,8 +99,9 @@ the ACE reports no RFID data (gate 3, shown as "UNKNOWN"). Third-party spools we
 
 - [x] Manual `MMU_LOAD` switches the Spoolman active spool (official Anycubic spools with RFID)
 - [x] Same on a gate **without** RFID data (patch 7)
-- [x] Patched file compiles; on the stock `20260716_02` file the result has md5 `fe947625d5eaaf214e2bcfff25d1f91c`
+- [x] Patched file compiles; on the stock `20260716_02` file the result has md5 `c0524685cd2319c79455e5d4da2702d4`
 - [x] Full printer reboot (RFID detection still fine)
+- [x] Applies and compiles on `20260901_01`, `master` and `develop` (source check only, not run on a printer)
 - [x] Real 2-color print: the active spool follows the print start (gate 1 -> spool 24) and the color change (gate 2 -> spool 16)
 - [ ] Longer prints with several swaps back and forth (e.g. A -> B -> A)
 - [ ] Third-party (non-Anycubic) spools
@@ -112,7 +113,7 @@ the ACE reports no RFID data (gate 3, shown as "UNKNOWN"). Third-party spools we
 - Name, material and temperature are not pulled from Spoolman.
 - Only IDs assigned with `MMU_SET_SPOOL` are sent to Spoolman (never the RFID-derived pseudo-IDs).
 - The Happy Hare `spoolman_support` flag stays `off`, so Mainsail's "Choose Spool" button is disabled. Use `MMU_SET_SPOOL`.
-- May be related to the known upstream issue about Spoolman not surviving the periodic ACE status rebuild.
+- Related upstream work: the maintainers track this as one workstream ([#89](https://github.com/rinkhals-community/Rinkhals/issues/89), [#107](https://github.com/rinkhals-community/Rinkhals/issues/107), [#141](https://github.com/rinkhals-community/Rinkhals/issues/141), PR [#142](https://github.com/rinkhals-community/Rinkhals/pull/142)). Their design goals include persisting assignments across restarts, which this patch does not do.
 
 ## Troubleshooting
 
@@ -124,6 +125,11 @@ the ACE reports no RFID data (gate 3, shown as "UNKNOWN"). Third-party spools we
 | `mmu_ace.py not found`                          | Run it on the printer (SSH), or use `--path`.               |
 | Two `moonraker.py` processes running            | Happens after `app.sh stop` then `app.sh start` (the auto-restart wrapper respawns Moonraker). Use `--restart`, or stop the `moonraker.sh` wrappers first. |
 | `MMU_SET_SPOOL: requires GATE=<n> SPOOLID=<id>` | Remove any space after `=`.                                 |
+
+## Changelog
+
+- **v1.0.1** - Fix: the `MMU_LOAD` hook could send an RFID-derived pseudo-ID to Spoolman on a gate without a manual assignment. It now only uses IDs assigned with `MMU_SET_SPOOL`. If you applied v1.0.0, run `--undo` then apply again.
+- **v1.0.0** - First public release.
 
 ## Contributing
 
