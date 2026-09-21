@@ -128,8 +128,8 @@ the ACE reports no RFID data (gate 3, shown as "UNKNOWN"). Third-party spools we
 
 ## Changelog
 
-- **v1.0.1** - Fix: the `MMU_LOAD` hook could send an RFID-derived pseudo-ID to Spoolman on a gate without a manual assignment. It now only uses IDs assigned with `MMU_SET_SPOOL`. If you applied v1.0.0, run `--undo` then apply again.
 - **v1.0.0** - First public release.
+  A build published briefly on 2026-09-21 had a bug in the `MMU_LOAD` hook: it could send an RFID-derived pseudo-ID to Spoolman on a gate without a manual assignment. It was replaced by the current build. If the script says you have an earlier build, run `--undo` and apply it again.
 
 ## Contributing
 

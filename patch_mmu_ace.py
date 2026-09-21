@@ -157,8 +157,8 @@ with open(target, "r", encoding="utf-8") as f:
 # Already patched? Say so clearly instead of failing on the first check.
 if "_activate_spoolman_for_gate" in content:
     if "status.gate_spool_id[gate]" in content:
-        sys.exit("Patched with v1.0.0 (known issue: the MMU_LOAD hook could send an RFID-derived "
-                 "pseudo-ID to Spoolman). Run with --undo first, then run the patch again.")
+        sys.exit("Patched with an earlier build of this patch (known issue: the MMU_LOAD hook could send "
+                 "an RFID-derived pseudo-ID to Spoolman). Run with --undo first, then run the patch again.")
     print("Already patched - nothing to change.")
     if args.restart:
         restart_moonraker(folder)
