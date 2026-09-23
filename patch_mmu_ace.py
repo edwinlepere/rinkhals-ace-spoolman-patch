@@ -7,7 +7,7 @@
 # |           *   Patched by Edwin Lepere <Mazerakam>   *            |
 # |                                                                  |
 # |        --------------------------------------------------        |
-# |     Rinkhals mmu_ace.py  -  Spoolman + ACE Pro  -  9 patches     |
+# |     Rinkhals mmu_ace.py  -  Spoolman + ACE Pro  -  10 patches     |
 # |                        Anycubic Kobra S1                         |
 # |                                                                  |
 # |        Unofficial community patch - use at your own risk         |
@@ -41,7 +41,7 @@ BANNER = """
 |           *   Patched by Edwin Lepere <Mazerakam>   *            |
 |                                                                  |
 |        --------------------------------------------------        |
-|     Rinkhals mmu_ace.py  -  Spoolman + ACE Pro  -  9 patches     |
+|     Rinkhals mmu_ace.py  -  Spoolman + ACE Pro  -  10 patches     |
 |                        Anycubic Kobra S1                         |
 |                                                                  |
 |        Unofficial community patch - use at your own risk         |
@@ -156,7 +156,7 @@ with open(target, "r", encoding="utf-8") as f:
 
 # Already patched? Say so clearly instead of failing on the first check.
 if "_activate_spoolman_for_gate" in content:
-    if "_spool_store" not in content:
+    if "spool_forget_after" not in content:
         sys.exit("Patched with an earlier build of this patch. "
                  "Run with --undo first, then run the patch again.")
     print("Already patched - nothing to change.")
@@ -534,6 +534,92 @@ new9b = '''                # Restore / forget the remembered Spoolman ID of this
 assert content.count(old9b) == 1, f"Match 9b: {content.count(old9b)}"
 content = content.replace(old9b, new9b)
 
+# PATCH 10: make the "forget after empty" timeout configurable via moonraker.custom.conf
+old10a = '''    def __init__(self, server: Server, host: str | None):
+        self.server = server
+'''
+
+new10a = '''    def __init__(self, server: Server, host: str | None, spool_forget_after: float = 300.0):
+        self.server = server
+        self._spool_forget_after = spool_forget_after
+'''
+
+assert content.count(old10a) == 1, f"Match 10a: {content.count(old10a)}"
+content = content.replace(old10a, new10a)
+
+old10b = '''        self._spool_store = MmuAceSpoolStore(self._spool_store_path())
+'''
+
+new10b = '''        self._spool_store = MmuAceSpoolStore(self._spool_store_path(), forget_after=self._spool_forget_after)
+'''
+
+assert content.count(old10b) == 1, f"Match 10b: {content.count(old10b)}"
+content = content.replace(old10b, new10b)
+
+old10c = '''    FORGET_AFTER_EMPTY_S = 300  # a gate empty for this long means the spool was removed
+
+    def __init__(self, path):
+        self.path = path
+'''
+
+new10c = '''    def __init__(self, path, forget_after: float = 300.0):
+        self.path = path
+        # 0 (or negative) means "never forget": useful with custom RFID tags that
+        # already carry a unique-per-spool SKU (see spool_forget_after in the README).
+        self.forget_after = forget_after if forget_after and forget_after > 0 else None
+'''
+
+assert content.count(old10c) == 1, f"Match 10c: {content.count(old10c)}"
+content = content.replace(old10c, new10c)
+
+old10d = '''        if present:
+            self._empty_since.pop(gate_index, None)
+            return False
+        return now - self._empty_since.setdefault(gate_index, now) >= self.FORGET_AFTER_EMPTY_S
+'''
+
+new10d = '''        if present:
+            self._empty_since.pop(gate_index, None)
+            return False
+        if self.forget_after is None:
+            return False
+        return now - self._empty_since.setdefault(gate_index, now) >= self.forget_after
+'''
+
+assert content.count(old10d) == 1, f"Match 10d: {content.count(old10d)}"
+content = content.replace(old10d, new10d)
+
+old10e = '''    def __init__(self, config: ConfigHelper):
+        self.server = config.get_server()
+        self.name = config.get_name()
+        self.kobra = self.server.load_component(self.server.config, \'kobra\')
+
+        host = config.get("host", None)
+        self.ace_controller = MmuAceController(self.server, host)
+'''
+
+new10e = '''    @staticmethod
+    def _read_spool_forget_after(config: ConfigHelper) -> float:
+        """0 (or a negative number) disables the timeout: a remembered assignment is
+        never dropped just because the gate is empty. Useful when every spool carries
+        a unique SKU (custom RFID tags), where the ambiguity this timeout guards
+        against (two spools of the same product) does not exist. Default: 300s (5 min).
+        """
+        return config.getfloat("spool_forget_after", 300.0)
+
+    def __init__(self, config: ConfigHelper):
+        self.server = config.get_server()
+        self.name = config.get_name()
+        self.kobra = self.server.load_component(self.server.config, \'kobra\')
+
+        host = config.get("host", None)
+        spool_forget_after = self._read_spool_forget_after(config)
+        self.ace_controller = MmuAceController(self.server, host, spool_forget_after)
+'''
+
+assert content.count(old10e) == 1, f"Match 10e: {content.count(old10e)}"
+content = content.replace(old10e, new10e)
+
 # Backup the untouched file (only now that every check has passed)
 if not os.path.exists(backup):
     shutil.copy2(target, backup)
@@ -542,7 +628,7 @@ if not os.path.exists(backup):
 with open(target, "w", encoding="utf-8") as f:
     f.write(content)
 
-print("All 9 patches applied successfully.")
+print("All 10 patches applied successfully.")
 if args.restart:
     restart_moonraker(folder)
 else:
