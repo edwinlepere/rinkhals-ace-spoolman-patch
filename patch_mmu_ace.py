@@ -7,7 +7,7 @@
 # |           *   Patched by Edwin Lepere <Mazerakam>   *            |
 # |                                                                  |
 # |        --------------------------------------------------        |
-# |     Rinkhals mmu_ace.py  -  Spoolman + ACE Pro  -  10 patches     |
+# |     Rinkhals mmu_ace.py  -  Spoolman + ACE Pro  -  11 patches     |
 # |                        Anycubic Kobra S1                         |
 # |                                                                  |
 # |        Unofficial community patch - use at your own risk         |
@@ -41,7 +41,7 @@ BANNER = """
 |           *   Patched by Edwin Lepere <Mazerakam>   *            |
 |                                                                  |
 |        --------------------------------------------------        |
-|     Rinkhals mmu_ace.py  -  Spoolman + ACE Pro  -  10 patches     |
+|     Rinkhals mmu_ace.py  -  Spoolman + ACE Pro  -  11 patches     |
 |                        Anycubic Kobra S1                         |
 |                                                                  |
 |        Unofficial community patch - use at your own risk         |
@@ -156,7 +156,7 @@ with open(target, "r", encoding="utf-8") as f:
 
 # Already patched? Say so clearly instead of failing on the first check.
 if "_activate_spoolman_for_gate" in content:
-    if "spool_forget_after" not in content:
+    if "spool_library" not in content:
         sys.exit("Patched with an earlier build of this patch. "
                  "Run with --undo first, then run the patch again.")
     print("Already patched - nothing to change.")
@@ -620,6 +620,243 @@ new10e = '''    @staticmethod
 assert content.count(old10e) == 1, f"Match 10e: {content.count(old10e)}"
 content = content.replace(old10e, new10e)
 
+# PATCH 11: opt-in SKU -> Spoolman ID library, shared across gates (off by default)
+old11a = '''    def __init__(self, path, forget_after: float = 300.0):
+        self.path = path
+        # 0 (or negative) means "never forget": useful with custom RFID tags that
+        # already carry a unique-per-spool SKU (see spool_forget_after in the README).
+        self.forget_after = forget_after if forget_after and forget_after > 0 else None
+        self.entries = {}       # gate index -> {"spool_id": int, "sku": str}
+        self._empty_since = {}  # gate index -> time.monotonic() of the first empty poll
+        logging.info(f"[mmu_ace] Spoolman assignments file: {path or \'none (persistence off)\'}")
+        self._load()
+
+    def _load(self):
+        if not self.path or not os.path.isfile(self.path):
+            return
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for key, value in data.items():
+                spool_id = int(value["spool_id"])
+                if spool_id > 0:
+                    self.entries[int(key)] = {"spool_id": spool_id, "sku": str(value.get("sku", ""))}
+            logging.info(f"[mmu_ace] Loaded {len(self.entries)} remembered Spoolman assignment(s) from {self.path}")
+        except Exception as e:
+            self.entries = {}
+            logging.warning(f"[mmu_ace] Could not read {self.path}: {e}")
+
+    def _save(self):
+        if not self.path:
+            return
+        try:
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({str(k): v for k, v in sorted(self.entries.items())}, f, indent=2)
+            os.replace(tmp, self.path)
+        except Exception as e:
+            logging.warning(f"[mmu_ace] Could not save {self.path}: {e}")
+
+    def remember(self, gate_index, spool_id, sku):
+        entry = {"spool_id": int(spool_id), "sku": sku or ""}
+        if self.entries.get(gate_index) != entry:
+            self.entries[gate_index] = entry
+            self._save()
+'''
+
+new11a = '''    def __init__(self, path, forget_after: float = 300.0, library_enabled: bool = False):
+        self.path = path
+        # 0 (or negative) means "never forget": useful with custom RFID tags that
+        # already carry a unique-per-spool SKU (see spool_forget_after in the README).
+        self.forget_after = forget_after if forget_after and forget_after > 0 else None
+        self.library_enabled = library_enabled
+        self.entries = {}       # gate index -> {"spool_id": int, "sku": str}
+        self.library = {}       # SKU -> spool_id (opt-in, see spool_library in the README)
+        self._empty_since = {}  # gate index -> time.monotonic() of the first empty poll
+        logging.info(f"[mmu_ace] Spoolman assignments file: {path or \'none (persistence off)\'}")
+        self._load()
+
+    def _load(self):
+        if not self.path or not os.path.isfile(self.path):
+            return
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            logging.warning(f"[mmu_ace] Could not read {self.path}: {e}")
+            return
+        library_data = data.pop("_library", {}) if isinstance(data, dict) else {}
+        for key, value in data.items():
+            try:
+                spool_id = int(value["spool_id"])
+                if spool_id > 0:
+                    self.entries[int(key)] = {"spool_id": spool_id, "sku": str(value.get("sku", ""))}
+            except Exception as e:
+                logging.warning(f"[mmu_ace] Skipping invalid entry {key!r} in {self.path}: {e}")
+        if isinstance(library_data, dict):
+            for sku, spool_id in library_data.items():
+                try:
+                    spool_id = int(spool_id)
+                    if sku and spool_id > 0:
+                        self.library[str(sku)] = spool_id
+                except Exception as e:
+                    logging.warning(f"[mmu_ace] Skipping invalid library entry {sku!r}: {e}")
+        logging.info(f"[mmu_ace] Loaded {len(self.entries)} remembered Spoolman assignment(s) and "
+                     f"{len(self.library)} library entrie(s) from {self.path}")
+
+    def _save(self):
+        if not self.path:
+            return
+        try:
+            tmp = self.path + ".tmp"
+            data = {str(k): v for k, v in sorted(self.entries.items())}
+            if self.library:
+                data["_library"] = dict(sorted(self.library.items()))
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp, self.path)
+        except Exception as e:
+            logging.warning(f"[mmu_ace] Could not save {self.path}: {e}")
+
+    def remember(self, gate_index, spool_id, sku):
+        entry = {"spool_id": int(spool_id), "sku": sku or ""}
+        changed = self.entries.get(gate_index) != entry
+        if changed:
+            self.entries[gate_index] = entry
+        if self.library_enabled and sku and self.library.get(sku) != int(spool_id):
+            self.library[sku] = int(spool_id)
+            changed = True
+        if changed:
+            self._save()
+
+    def library_match(self, sku):
+        """Spoolman ID remembered for this SKU across any gate, or None. The caller
+        (MmuAceController) decides whether it is safe to apply it right now (e.g. not
+        already active on a different gate) - this method has no notion of "gates"."""
+        if not self.library_enabled or not sku:
+            return None
+        return self.library.get(sku)
+'''
+
+assert content.count(old11a) == 1, f"Match 11a: {content.count(old11a)}"
+content = content.replace(old11a, new11a)
+
+old11b = '''        # The assignments are also written to <data_path>/config/mmu_ace_spools.json so they
+        # survive a Moonraker restart or a reboot (see MmuAceSpoolStore).
+        self._spool_store = MmuAceSpoolStore(self._spool_store_path(), forget_after=self._spool_forget_after)
+'''
+
+new11b = '''        # The assignments are also written to <data_path>/config/mmu_ace_spools.json so they
+        # survive a Moonraker restart or a reboot (see MmuAceSpoolStore).
+        self._spool_store = MmuAceSpoolStore(self._spool_store_path(), forget_after=self._spool_forget_after,
+                                              library_enabled=self._spool_library_enabled)
+'''
+
+assert content.count(old11b) == 1, f"Match 11b: {content.count(old11b)}"
+content = content.replace(old11b, new11b)
+
+old11c = '''            saved = store.entries.get(gate_index)
+            if gate_index not in self._manual_spool_overrides:
+                spool_id = store.restorable(gate_index, sku)
+                if spool_id:
+                    self._manual_spool_overrides[gate_index] = spool_id
+                    logging.info(f"Gate {gate_index}: restored Spoolman ID {spool_id} (same spool as before)")
+                    if gate_index == self.ace.loaded_gate:
+                        self.eventloop.create_task(self._activate_spoolman_for_gate(gate_index))
+'''
+
+new11c = '''            saved = store.entries.get(gate_index)
+            if gate_index not in self._manual_spool_overrides:
+                spool_id = store.restorable(gate_index, sku)
+                if spool_id:
+                    self._manual_spool_overrides[gate_index] = spool_id
+                    logging.info(f"Gate {gate_index}: restored Spoolman ID {spool_id} (same spool as before)")
+                    if gate_index == self.ace.loaded_gate:
+                        self.eventloop.create_task(self._activate_spoolman_for_gate(gate_index))
+                else:
+                    library_id = store.library_match(sku)
+                    if library_id and library_id in self._manual_spool_overrides.values():
+                        logging.warning(f"Gate {gate_index}: SKU {sku} is linked to spool {library_id} in the "
+                                         f"library, but that ID is already active on another gate right now - "
+                                         f"not auto-linking (run MMU_SET_SPOOL for this gate if it is really a "
+                                         f"different spool)")
+                    elif library_id:
+                        self._manual_spool_overrides[gate_index] = library_id
+                        logging.info(f"Gate {gate_index}: auto-linked to spool {library_id} via the SKU library "
+                                     f"(SKU {sku})")
+                        if gate_index == self.ace.loaded_gate:
+                            self.eventloop.create_task(self._activate_spoolman_for_gate(gate_index))
+'''
+
+assert content.count(old11c) == 1, f"Match 11c: {content.count(old11c)}"
+content = content.replace(old11c, new11c)
+
+old11d = '''    def __init__(self, server: Server, host: str | None, spool_forget_after: float = 300.0):
+        self.server = server
+        self._spool_forget_after = spool_forget_after
+'''
+
+new11d = '''    def __init__(self, server: Server, host: str | None, spool_forget_after: float = 300.0,
+                 spool_library_enabled: bool = False):
+        self.server = server
+        self._spool_forget_after = spool_forget_after
+        self._spool_library_enabled = spool_library_enabled
+'''
+
+assert content.count(old11d) == 1, f"Match 11d: {content.count(old11d)}"
+content = content.replace(old11d, new11d)
+
+old11e = '''    @staticmethod
+    def _read_spool_forget_after(config: ConfigHelper) -> float:
+        """0 (or a negative number) disables the timeout: a remembered assignment is
+        never dropped just because the gate is empty. Useful when every spool carries
+        a unique SKU (custom RFID tags), where the ambiguity this timeout guards
+        against (two spools of the same product) does not exist. Default: 300s (5 min).
+        """
+        return config.getfloat("spool_forget_after", 300.0)
+
+    def __init__(self, config: ConfigHelper):
+        self.server = config.get_server()
+        self.name = config.get_name()
+        self.kobra = self.server.load_component(self.server.config, \'kobra\')
+
+        host = config.get("host", None)
+        spool_forget_after = self._read_spool_forget_after(config)
+        self.ace_controller = MmuAceController(self.server, host, spool_forget_after)
+'''
+
+new11e = '''    @staticmethod
+    def _read_spool_forget_after(config: ConfigHelper) -> float:
+        """0 (or a negative number) disables the timeout: a remembered assignment is
+        never dropped just because the gate is empty. Useful when every spool carries
+        a unique SKU (custom RFID tags), where the ambiguity this timeout guards
+        against (two spools of the same product) does not exist. Default: 300s (5 min).
+        """
+        return config.getfloat("spool_forget_after", 300.0)
+
+    @staticmethod
+    def _read_spool_library_enabled(config: ConfigHelper) -> bool:
+        """Off by default everywhere. Only safe when every spool has a unique SKU
+        (e.g. custom-flashed RFID tags): with stock Anycubic tags, where a SKU is a
+        shared product code, enabling this can silently link a gate to a different
+        physical spool of the same product (see spool_library in the README).
+        """
+        return config.getboolean("spool_library", False)
+
+    def __init__(self, config: ConfigHelper):
+        self.server = config.get_server()
+        self.name = config.get_name()
+        self.kobra = self.server.load_component(self.server.config, \'kobra\')
+
+        host = config.get("host", None)
+        spool_forget_after = self._read_spool_forget_after(config)
+        spool_library_enabled = self._read_spool_library_enabled(config)
+        self.ace_controller = MmuAceController(self.server, host, spool_forget_after, spool_library_enabled)
+'''
+
+assert content.count(old11e) == 1, f"Match 11e: {content.count(old11e)}"
+content = content.replace(old11e, new11e)
+
 # Backup the untouched file (only now that every check has passed)
 if not os.path.exists(backup):
     shutil.copy2(target, backup)
@@ -628,7 +865,7 @@ if not os.path.exists(backup):
 with open(target, "w", encoding="utf-8") as f:
     f.write(content)
 
-print("All 10 patches applied successfully.")
+print("All 11 patches applied successfully.")
 if args.restart:
     restart_moonraker(folder)
 else:
